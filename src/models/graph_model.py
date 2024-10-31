@@ -2,7 +2,6 @@ from typing import List, Optional
 from pydantic import BaseModel, Field, model_validator
 from bson import ObjectId
 from .node_model import Node
-from .edge_model import Edge
 
 class Graph(BaseModel):
     """
@@ -18,7 +17,9 @@ class Graph(BaseModel):
         Ensures that each node within the graph has a unique ID.
         """
         nodes = values.get('nodes', [])
-        node_ids = [node.node_id for node in nodes]
+        
+        # Extract node_ids from dictionary or from Node instances
+        node_ids = [node['node_id'] if isinstance(node, dict) else node.node_id for node in nodes]
         
         if len(node_ids) != len(set(node_ids)):
             raise ValueError("Node IDs must be unique within the graph.")
