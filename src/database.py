@@ -13,3 +13,4 @@ client = AsyncIOMotorClient(MONGO_URI)
 
 # Access the "graph_database" database
 db = client["graph_database"]
+

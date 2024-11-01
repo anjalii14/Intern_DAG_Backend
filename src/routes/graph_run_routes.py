@@ -77,7 +77,7 @@ async def get_leaf_outputs_route(graph_id: str, run_id: str):
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.post("/graph/{graph_id}/level-wise", response_model=Dict[str, Any])
+@router.post("/api/graph/{graph_id}/level-wise", response_model=List[List[str]])
 async def level_wise_traversal_route(graph_id: str, config: GraphRunConfig):
     """
     Perform a level-wise traversal of the graph based on the GraphRunConfig.
@@ -99,8 +99,8 @@ async def level_wise_traversal_route(graph_id: str, config: GraphRunConfig):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/graph/{graph_id}/toposort", response_model=List[str])
-async def topological_sort_route(graph_id: str):
+@router.post("/graph/{graph_id}/toposort", response_model=List[str])
+async def topological_sort_route(graph_id: str, config: GraphRunConfig):
     """
     Return a topological sort of the graph.
     
@@ -114,7 +114,7 @@ async def topological_sort_route(graph_id: str):
         HTTPException: If the graph cannot be topologically sorted.
     """
     try:
-        topological_order = await topological_sort(graph_id)
+        topological_order = await topological_sort(graph_id, config)
         return topological_order
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

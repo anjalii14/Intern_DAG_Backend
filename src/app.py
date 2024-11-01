@@ -21,9 +21,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+import os
+from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Retrieve the MongoDB URI from the .env file
+MONGO_URI = os.getenv("MONGO_URI")
+
+# Create an AsyncIOMotorClient instance
+client = AsyncIOMotorClient(MONGO_URI)
+
+# Access the "graph_database" database
+db = client["graph_database"]
+
 # Include different routers from the modules to organize the endpoints
 app.include_router(graph_crud_router, prefix="/api/graph", tags=["Graph CRUD Operations"])
 app.include_router(graph_run_router, prefix="/api/graph", tags=["Graph Run Operations"])
+
+@app.on_event("startup")
+async def startup_event():
+    try:
+        # Attempt a command to test the connection
+        server_info = await client.server_info()
+        print("Connected to MongoDB")
+    except Exception as e:
+        print("Could not connect to MongoDB:", e)
 
 @app.get("/", summary="Root Endpoint")
 async def root():

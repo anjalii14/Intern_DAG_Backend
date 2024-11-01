@@ -1,11 +1,11 @@
 # graph_controller.py
 
-from typing import List
+from typing import List, Dict
 from bson import ObjectId
 from src.models.graph_model import Graph
 from src.models.graph_run_config import GraphRunConfig
 from src.utils.graph_validations import validate_graph_structure
-from src.utils.helpers import generate_run_id, get_node_by_id, get_topological_order, is_leaf_node, apply_run_config, get_node_output, level_wise_traversal
+from src.utils.helpers import generate_run_id, get_node_by_id, get_topological_order, is_leaf_node, apply_run_config, compute_node_output, get_level_wise_traversal
 from src.database import db
 
 
@@ -28,6 +28,7 @@ async def create_graph(graph: Graph):
     existing_graph = await db["graphs"].find_one(graph_dict)
     if existing_graph:
         existing_graph["_id"] = str(existing_graph["_id"])
+        print("Graph already exists")
         return existing_graph
 
     result = await db["graphs"].insert_one(graph_dict)
@@ -99,6 +100,8 @@ async def delete_graph(graph_id: str):
         raise ValueError("Graph not found")
     return True
 
+import uuid
+from fastapi import HTTPException
 
 async def run_graph(graph_id: str, config: GraphRunConfig):
     """
@@ -112,35 +115,44 @@ async def run_graph(graph_id: str, config: GraphRunConfig):
         dict: The run result outputs along with the generated run ID.
 
     Raises:
-        ValueError: If the graph is not found or configuration is invalid.
+        HTTPException: If the graph is not found or configuration is invalid.
     """
+    # Check if a similar run configuration already exists
+    existing_run = await db["graph_runs"].find_one({"graph_id": graph_id, "config": config.dict()})
+    if existing_run:
+        return {
+            "message": "Run with the same configuration already exists",
+            "run_id": existing_run["run_id"],
+            "outputs": existing_run["outputs"],
+        }
+
+    # Retrieve the graph
     graph = await get_graph(graph_id)
 
     # Apply the run configuration
     configured_graph = apply_run_config(graph, config)
 
-    # Topological sort to ensure proper execution order
-    topological_order = get_topological_order(configured_graph)
+    # Generate a unique run ID for this run
+    run_id = str(uuid.uuid4())
 
-    # Ensure all nodes are covered by the topological order (no disconnected nodes)
-    if len(topological_order) != len(configured_graph.nodes):
-        raise ValueError("The graph contains disconnected nodes (islands).")
-
-# Execute the graph and store results
+    # Prepare the run result dictionary to store outputs for each node
     run_result_outputs = {}
-    for node_id in topological_order:
-        node_output = await get_node_output(configured_graph, node_id, run_result_outputs)
-        run_result_outputs[node_id] = node_output
 
-    # Generate a run ID for this run
-    run_id = generate_run_id()
+    # Execute the graph and store results sequentially based on the node order
+    for node in configured_graph.nodes:
+        # Compute the output for each node
+        node_output = compute_node_output(node, run_result_outputs)
+        run_result_outputs[node.node_id] = node_output
 
-    # Save the run result
+    # Prepare the final run result to be saved in MongoDB
     run_result = {
         "run_id": run_id,
         "graph_id": graph_id,
-        "outputs": run_result_outputs
+        "config": config.dict(),
+        "outputs": run_result_outputs,
     }
+
+    # Insert the final run result into MongoDB
     await db["graph_runs"].insert_one(run_result)
 
     return {"run_id": run_id, "outputs": run_result_outputs}
@@ -187,11 +199,10 @@ async def get_leaf_outputs(graph_id: str, run_id: str):
     graph = await get_graph(graph_id)
     leaf_node_ids = [node.node_id for node in graph.nodes if is_leaf_node(node)]
     leaf_outputs = {node_id: run["outputs"].get(node_id) for node_id in leaf_node_ids}
-
+    print(leaf_outputs)
     return leaf_outputs
 
-
-async def level_wise_traversal(graph_id: str, config: GraphRunConfig):
+async def level_wise_traversal(graph_id: str, config: GraphRunConfig) -> List[List[str]]:
     """
     Perform a level-wise traversal of the graph based on the GraphRunConfig.
 
@@ -200,20 +211,23 @@ async def level_wise_traversal(graph_id: str, config: GraphRunConfig):
         config (GraphRunConfig): The configuration for running the graph.
 
     Returns:
-        dict: Level-wise traversal of nodes.
+        List[List[str]]: A list of lists where each inner list contains node IDs at the corresponding level.
     """
+    # Retrieve the graph
     graph = await get_graph(graph_id)
+
+    # Apply the run configuration
     configured_graph = apply_run_config(graph, config)
 
-    return level_wise_traversal(configured_graph)
+    return get_level_wise_traversal(configured_graph)
 
-
-async def topological_sort(graph_id: str):
+async def topological_sort(graph_id: str, config):
     """
-    Return a topological sort of the graph.
+    Return a topological sort of the graph with the applied configuration.
 
     Args:
         graph_id (str): The ID of the graph.
+        config (GraphRunConfig): The configuration for running the graph.
 
     Returns:
         list: List of nodes in topological order.
@@ -221,8 +235,14 @@ async def topological_sort(graph_id: str):
     Raises:
         ValueError: If the graph cannot be topologically sorted.
     """
+    # Retrieve the graph using the given graph ID
     graph = await get_graph(graph_id)
+
+    # Apply the provided configuration to the graph
+    configured_graph = apply_run_config(graph, config)
+
+    # Attempt to get the topological order of the configured graph
     try:
-        return get_topological_order(graph)
+        return get_topological_order(configured_graph)
     except ValueError as e:
         raise ValueError("Cannot perform topological sort: " + str(e))
