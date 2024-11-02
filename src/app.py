@@ -38,8 +38,8 @@ client = AsyncIOMotorClient(MONGO_URI)
 db = client["graph_database"]
 
 # Include different routers from the modules to organize the endpoints
-app.include_router(graph_crud_router, prefix="/api/graph", tags=["Graph CRUD Operations"])
-app.include_router(graph_run_router, prefix="/api/graph", tags=["Graph Run Operations"])
+app.include_router(graph_crud_router, prefix="/api", tags=["Graph CRUD Operations"])
+app.include_router(graph_run_router, prefix="/api", tags=["Graph Run Operations"])
 
 @app.on_event("startup")
 async def startup_event():

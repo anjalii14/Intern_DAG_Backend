@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
-from src.controllers.graph_controller import create_graph, get_graph, update_graph, delete_graph
+from src.controllers.graph_controller import create_graph, get_graph, update_graph, delete_graph, get_all_graphs
 from src.models.graph_model import Graph
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 router = APIRouter()
 
@@ -41,3 +41,10 @@ async def delete_graph_route(graph_id: str):
         return {"success": result}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    
+@router.get("/graph", response_model=List[dict])
+async def read_all_graphs():
+    """
+    API endpoint to retrieve all graphs.
+    """
+    return await get_all_graphs()

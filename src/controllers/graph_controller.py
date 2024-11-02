@@ -1,11 +1,12 @@
 # graph_controller.py
 
-from typing import List, Dict
+from typing import List, Dict, Set
 from bson import ObjectId
 from src.models.graph_model import Graph
 from src.models.graph_run_config import GraphRunConfig
 from src.utils.graph_validations import validate_graph_structure
-from src.utils.helpers import generate_run_id, get_node_by_id, get_topological_order, is_leaf_node, apply_run_config, compute_node_output, get_level_wise_traversal
+from src.utils.graph_run_validations import validate_graph_config
+from src.utils.helpers import generate_run_id, get_node_by_id, get_topological_order, is_leaf_node, apply_run_config, compute_node_output, get_level_wise_traversal, find_islands_in_graph
 from src.database import db
 
 
@@ -57,6 +58,18 @@ async def get_graph(graph_id: str):
     graph["_id"] = str(graph["_id"])
     return Graph(**graph)
 
+async def get_all_graphs():
+    """
+    Retrieve all graphs from the database.
+
+    Returns:
+        List[dict]: A list of all graph dictionaries with their IDs as strings.
+    """
+    graphs = []
+    async for graph in db["graphs"].find():
+        graph["_id"] = str(graph["_id"])  # Convert ObjectId to string
+        graphs.append(graph)
+    return graphs
 
 async def update_graph(graph_id: str, updated_graph: Graph):
     """
@@ -100,9 +113,6 @@ async def delete_graph(graph_id: str):
         raise ValueError("Graph not found")
     return True
 
-import uuid
-from fastapi import HTTPException
-
 async def run_graph(graph_id: str, config: GraphRunConfig):
     """
     Run the graph using the provided GraphRunConfig.
@@ -112,51 +122,106 @@ async def run_graph(graph_id: str, config: GraphRunConfig):
         config (GraphRunConfig): The configuration for running the graph.
 
     Returns:
-        dict: The run result outputs along with the generated run ID.
+        dict: The run result outputs, the generated run ID, and the configured graph.
 
     Raises:
-        HTTPException: If the graph is not found or configuration is invalid.
+        HTTPException: If the graph is not found, configuration is invalid, or if there are other errors.
     """
-    # Check if a similar run configuration already exists
-    existing_run = await db["graph_runs"].find_one({"graph_id": graph_id, "config": config.dict()})
-    if existing_run:
-        return {
-            "message": "Run with the same configuration already exists",
-            "run_id": existing_run["run_id"],
-            "outputs": existing_run["outputs"],
+    try:
+        # Check if a similar run configuration already exists
+        existing_run = await db["graph_runs"].find_one({"graph_id": graph_id, "config": config.dict()})
+        if existing_run:
+            return {
+                "message": "Run with the same configuration already exists",
+                "run_id": existing_run["run_id"],
+                "outputs": existing_run["outputs"],
+                "configured_graph": existing_run.get("configured_graph")  # Include configured_graph if available
+            }
+
+        # Retrieve the graph and validate the configuration
+        graph = await get_graph(graph_id)
+        validate_graph_config(graph, config)
+        
+        # Apply the run configuration and validate
+        configured_graph = apply_run_config(graph, config)
+        # Generate topological order for nodes
+        print(configured_graph.nodes)
+        sorted_node_ids = get_topological_order(configured_graph)
+        node_lookup = {node.node_id: node for node in configured_graph.nodes}
+
+        # Generate unique run ID
+        run_id = generate_run_id()
+        run_result_outputs = {}
+
+        # Execute nodes in topological order
+        for node_id in sorted_node_ids:
+            node = node_lookup[node_id]
+            node_output = compute_node_output(node, run_result_outputs)
+            run_result_outputs[node_id] = node_output
+
+        # Prepare final run result for MongoDB
+        run_result = {
+            "run_id": run_id,
+            "graph_id": graph_id,
+            "config": config.dict(),
+            "outputs": run_result_outputs,
+            "configured_graph": configured_graph.dict()
         }
 
-    # Retrieve the graph
-    graph = await get_graph(graph_id)
+        # Insert result into MongoDB
+        await db["graph_runs"].insert_one(run_result)
 
-    # Apply the run configuration
-    configured_graph = apply_run_config(graph, config)
+        # Return the run ID, outputs, and configured graph for visualization
+        return {
+            "run_id": run_id,
+            "outputs": run_result_outputs,
+            "configured_graph": configured_graph.dict()
+        }
 
-    # Generate a unique run ID for this run
-    run_id = str(uuid.uuid4())
+    except ValueError as ve:
+        # Raise HTTP 400 error with a detailed message for validation issues
+        raise HTTPException(status_code=400, detail=f"Validation Error: {str(ve)}")
 
-    # Prepare the run result dictionary to store outputs for each node
-    run_result_outputs = {}
+    except Exception as e:
+        # Handle unexpected errors with a 500 error code and return the error message
+        raise HTTPException(status_code=500, detail=f"{str(e)}")
 
-    # Execute the graph and store results sequentially based on the node order
-    for node in configured_graph.nodes:
-        # Compute the output for each node
-        node_output = compute_node_output(node, run_result_outputs)
-        run_result_outputs[node.node_id] = node_output
 
-    # Prepare the final run result to be saved in MongoDB
-    run_result = {
-        "run_id": run_id,
-        "graph_id": graph_id,
-        "config": config.dict(),
-        "outputs": run_result_outputs,
+async def get_configured_graph(graph_id: str, run_id: str):
+    """
+    Retrieve a configured graph by graph ID and run ID.
+
+    Args:
+        graph_id (str): The ID of the graph.
+        run_id (str): The unique run ID of the graph execution.
+
+    Returns:
+        The configured graph object with run_id and graph_id.
+
+    Raises:
+        ValueError: If the configured graph is not found or if the run_id is invalid.
+    """
+    try:
+        # Convert run_id to ObjectId and handle invalid format
+        run_object_id = ObjectId(run_id)
+    except:
+        raise ValueError(f"Invalid run_id format: {run_id}")
+
+    # Fetch the graph run record from MongoDB using the graph_id and run_id
+    graph_run = await db["graph_runs"].find_one({"_id": run_object_id, "graph_id": graph_id})
+    
+    # If no such record exists, raise an exception
+    if graph_run is None:
+        raise ValueError("Configured graph run not found")
+
+    # Prepare the response directly as a dictionary
+    response = {
+        "run_id": str(graph_run["_id"]),
+        "graph_id": graph_run["graph_id"],
+        "configured_graph": graph_run["configured_graph"]
     }
-
-    # Insert the final run result into MongoDB
-    await db["graph_runs"].insert_one(run_result)
-
-    return {"run_id": run_id, "outputs": run_result_outputs}
-
+    
+    return response
 
 async def get_run_outputs(graph_id: str, run_id: str):
     """
@@ -246,3 +311,59 @@ async def topological_sort(graph_id: str, config):
         return get_topological_order(configured_graph)
     except ValueError as e:
         raise ValueError("Cannot perform topological sort: " + str(e))
+    
+async def get_islands_for_graph(graph_id: str, config: GraphRunConfig) -> List[Set[str]]:
+    """
+    Find and return all islands in the graph after applying GraphRunConfig.
+
+    Args:
+        graph_id (str): The ID of the graph.
+        config (GraphRunConfig): The configuration for running the graph.
+
+    Returns:
+        List[Set[str]]: A list of sets where each set contains node IDs that form an island.
+
+    Raises:
+        ValueError: If the graph is not found.
+    """
+    # Retrieve the graph using the given graph ID
+    graph = await get_graph(graph_id)
+    if not graph:
+        raise ValueError(f"Graph with ID {graph_id} not found.")
+
+    # Apply the provided configuration to the graph
+    configured_graph = apply_run_config(graph, config)
+
+    # Find all islands in the configured graph
+    islands = find_islands_in_graph(configured_graph, return_islands=True)
+
+    return islands
+
+from fastapi import HTTPException
+
+async def get_graph_runs(graph_id: str) -> List[Dict]:
+    """
+    Retrieve all runs associated with a specific graph ID.
+
+    Args:
+        graph_id (str): The ID of the graph to fetch runs for.
+
+    Returns:
+        List[Dict]: A list of all runs associated with the graph, with their IDs and timestamps.
+
+    Raises:
+        HTTPException: If any database operation fails.
+    """
+    try:
+        runs = await db["graph_runs"].find({"graph_id": graph_id}).to_list(length=None)
+        
+        # Convert each run to include `created_at` as a string or default to an empty string if None
+        return [
+            {
+                "run_id": str(run["_id"]),
+                "created_at": run.get("created_at", "").isoformat() if run.get("created_at") else ""
+            }
+            for run in runs
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching runs: {str(e)}")

@@ -1,5 +1,5 @@
 import uuid
-from typing import List, Dict
+from typing import List, Dict, Set, Union
 from src.models.graph_model import Graph
 from src.models.node_model import Node
 from fastapi import HTTPException
@@ -89,17 +89,7 @@ def apply_run_config(graph: Graph, config) -> Graph:
         Graph: The updated graph after applying enable/disable and data overwrites.
     """
     updated_graph = graph.copy(deep=True)
-
-    # Validate that enable_list and disable_list are mutually exclusive
-    if set(config.enable_list) & set(config.disable_list):
-        raise ValueError("Nodes cannot be in both enable_list and disable_list. Ensure there is no overlap.")
-
-    # Ensure all nodes are covered by either enable_list or disable_list
-    all_node_ids = {node.node_id for node in graph.nodes}
-    specified_nodes = set(config.enable_list) | set(config.disable_list)
-    if all_node_ids != specified_nodes:
-        raise ValueError("All nodes must be specified in either enable_list or disable_list.")
-
+    
     # Get the set of nodes to disable
     nodes_to_disable = set(config.disable_list)
 
@@ -121,6 +111,7 @@ def apply_run_config(graph: Graph, config) -> Graph:
 
     return updated_graph
 
+# Global cache to store computed outputs for each run
 def compute_node_output(node: Node, previous_outputs: dict) -> dict:
     """
     Compute the output for a node based on its inputs and previous node outputs.
@@ -143,7 +134,6 @@ def compute_node_output(node: Node, previous_outputs: dict) -> dict:
                     node_output[dst_key] = previous_outputs[edge.src_node][src_key]
 
     return node_output
-
 
 def get_level_wise_traversal(graph: Graph) -> List[List[str]]:
     """
@@ -189,3 +179,56 @@ def get_level_wise_traversal(graph: Graph) -> List[List[str]]:
     level_order = [level_result[level] for level in sorted(level_result.keys())]
 
     return level_order
+
+def find_islands_in_graph(graph: Graph, return_islands: bool = False) -> Union[bool, List[Set[str]]]:
+    """
+    Find if there are any islands (disconnected components) in the graph.
+    Optionally, return the list of all islands.
+
+    Args:
+        graph (Graph): The graph to check.
+        return_islands (bool): Whether to return the list of islands or just a boolean indicating existence.
+
+    Returns:
+        bool or List[Set[str]]: Returns True if there are multiple disconnected components if return_islands is False.
+                                Otherwise, returns a list of sets where each set contains node IDs that form an island.
+    """
+    visited = set()
+    islands = []
+
+    # Function to perform DFS from a given node
+    def dfs(node_id: str, current_island: Set[str]):
+        stack = [node_id]
+        while stack:
+            current_node_id = stack.pop()
+            if current_node_id not in visited:
+                visited.add(current_node_id)
+                current_island.add(current_node_id)
+                current_node = next((n for n in graph.nodes if n.node_id == current_node_id), None)
+                if current_node:
+                    # Traverse all connected nodes through paths_out
+                    for edge in current_node.paths_out:
+                        if edge.dst_node not in visited:
+                            stack.append(edge.dst_node)
+                    # Traverse all connected nodes through paths_in (since it can be undirected)
+                    for edge in current_node.paths_in:
+                        if edge.src_node not in visited:
+                            stack.append(edge.src_node)
+
+    # Loop through all nodes to find disconnected components
+    for node in graph.nodes:
+        if node.node_id not in visited:
+            current_island = set()
+            dfs(node.node_id, current_island)
+            islands.append(current_island)
+
+            # If we're not interested in returning islands but just checking if there are multiple
+            if not return_islands and len(islands) > 1:
+                return True  # Multiple disconnected components detected
+
+    # If return_islands is True, return the list of islands
+    if return_islands:
+        return islands
+
+    # If return_islands is False, return whether there are multiple disconnected components
+    return len(islands) > 1

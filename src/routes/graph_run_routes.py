@@ -1,10 +1,10 @@
 # graph_run_routes.py
 
 from fastapi import APIRouter, HTTPException
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 from src.controllers.graph_controller import (
     run_graph, get_run_outputs, get_leaf_outputs,
-    level_wise_traversal, topological_sort
+    level_wise_traversal, topological_sort, get_islands_for_graph, get_configured_graph, get_graph_runs
 )
 from src.models.graph_run_config import GraphRunConfig
 
@@ -21,16 +21,25 @@ async def run_graph_route(graph_id: str, config: GraphRunConfig):
         config (GraphRunConfig): The configuration for running the graph.
     
     Returns:
-        dict: Contains the run ID of the run.
+        dict: Contains the run ID, outputs, and configured graph of the run.
     
     Raises:
         HTTPException: If the graph is not found or configuration is invalid.
     """
     try:
-        run_id = await run_graph(graph_id, config)
-        return {"run_id": run_id}
+        # Capture the entire response from run_graph, including run_id, outputs, and configured graph
+        run_result = await run_graph(graph_id, config)
+        
+        # Return the complete run result
+        return run_result
+
     except ValueError as e:
+        # Return a 400 status with the error message for validation issues
         raise HTTPException(status_code=400, detail=str(e))
+
+    except Exception as e:
+        # Catch any unexpected exceptions and return a 500 error
+        raise HTTPException(status_code=500, detail=f"{str(e)}")
 
 
 @router.get("/graph/{graph_id}/run/{run_id}/outputs", response_model=Dict[str, Any])
@@ -75,6 +84,8 @@ async def get_leaf_outputs_route(graph_id: str, run_id: str):
         return leaf_outputs
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    
+
 
 
 @router.post("/api/graph/{graph_id}/level-wise", response_model=List[List[str]])
@@ -141,34 +152,70 @@ async def get_leaf_nodes_route(graph_id: str, run_id: str):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
+@router.post("/api/graph/{graph_id}/islands")
+async def get_islands_route(graph_id: str, config: GraphRunConfig) -> List[Set[str]]:
+    """
+    API endpoint to get islands in a graph after applying a GraphRunConfig.
 
-## TO-DO efficiently calculating and validating graph run config
+    Args:
+        graph_id (str): The ID of the graph.
+        config (GraphRunConfig): The configuration for running the graph.
 
-# @router.get("/graph/{graph_id}/islands", response_model=List[List[str]])
-# async def get_graph_islands_route(
-#     graph_id: str, 
-#     config: Optional[GraphRunConfig] = None, 
-#     run_id: Optional[str] = None
-# ):
-#     """
-#     Get a list of all islands (i.e., connected components) for the graph.
+    Returns:
+        List[Set[str]]: A list of sets where each set contains node IDs that form an island.
 
-#     Args:
-#         graph_id (str): The ID of the graph.
-#         config (Optional[GraphRunConfig]): The configuration for running the graph.
-#         run_id (Optional[str]): The run ID to analyze.
+    Raises:
+        HTTPException: If the graph is not found or other errors occur.
+    """
+    try:
+        islands = await get_islands_for_graph(graph_id, config=config)
+        return islands
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-#     Returns:
-#         list: List of connected components (islands).
+@router.get("/graph/{graph_id}/run/{run_id}/configured", response_model=Dict[str, str])
+async def get_configured_graph_route(graph_id: str, run_id: str):
+    """
+    Retrieve only the configured graph data, graph ID, and run ID.
 
-#     Raises:
-#         HTTPException: If the graph is not found or if both config and run_id are provided.
-#     """
-#     if (config and run_id) or (not config and not run_id):
-#         raise HTTPException(status_code=400, detail="Provide either 'GraphRunConfig' or 'run_id', but not both.")
+    Args:
+        graph_id (str): The ID of the graph.
+        run_id (str): The unique run ID.
 
-#     try:
-#         islands = await calculate_islands(graph_id, config=config, run_id=run_id)
-#         return islands
-#     except ValueError as e:
-#         raise HTTPException(status_code=400, detail=str(e))
+    Returns:
+        dict: Subset of the run result containing `graph_id`, `run_id`, and `configured_graph` for visualization.
+
+    Raises:
+        HTTPException: If the graph run is not found.
+    """
+    try:
+        run_id, graph_id, configured_graph = await get_configured_graph(graph_id, run_id)
+        return {
+            "run_id": run_id,
+            "graph_id": graph_id,
+            "configured_graph": configured_graph
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+@router.get("/graph/{graph_id}/runs", response_model=List[Dict[str, str]])
+async def get_graph_runs_route(graph_id: str):
+    """
+    API endpoint to retrieve all previous runs for a specific graph ID.
+
+    Args:
+        graph_id (str): The ID of the graph to fetch runs for.
+
+    Returns:
+        List[Dict[str, str]]: A list of run IDs and creation timestamps.
+
+    Raises:
+        HTTPException: If fetching runs fails.
+    """
+    try:
+        runs = await get_graph_runs(graph_id)
+        return runs
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
