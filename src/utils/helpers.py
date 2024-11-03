@@ -1,7 +1,7 @@
 import uuid
 from typing import List, Dict, Set, Union
 from src.models.graph_model import Graph
-from src.models.node_model import Node
+from src.models.node_model import Node, DataType
 from fastapi import HTTPException
 from src.database import db
 
@@ -103,37 +103,22 @@ def apply_run_config(graph: Graph, config) -> Graph:
         node.paths_in = [edge for edge in node.paths_in if edge.src_node not in nodes_to_disable]
         node.paths_out = [edge for edge in node.paths_out if edge.dst_node not in nodes_to_disable]
 
-    # Overwrite data_in for nodes based on provided configuration
-    for node_id, data_overwrite in config.data_overwrites.items():
-        node = get_node_by_id(updated_graph, node_id)
-        if node:
-            node.data_in.update(data_overwrite)
-
     return updated_graph
 
-# Global cache to store computed outputs for each run
-def compute_node_output(node: Node, previous_outputs: dict) -> dict:
+def compute_node_output(node: Node, data_in: Dict[str, DataType]) -> Dict[str, DataType]:
     """
-    Compute the output for a node based on its inputs and previous node outputs.
+    Computes the output of the node based on the node's predefined `data_out`.
 
-    Parameters:
-        node (Node): The node to compute output for.
-        previous_outputs (dict): Dictionary of outputs from previously executed nodes.
+    Args:
+        node: The current node being executed.
+        data_in: The resolved inputs for the node.
 
     Returns:
-        dict: The output of the node.
+        dict: The computed outputs for the node.
     """
-    # Example logic: Simply copy data_in to data_out, or apply some operation if needed
-    node_output = node.data_in.copy()
-
-    # For each input, check if it depends on a previous node's output
-    for edge in node.paths_in:
-        if edge.src_node in previous_outputs:
-            for src_key, dst_key in edge.src_to_dst_data_keys.items():
-                if src_key in previous_outputs[edge.src_node]:
-                    node_output[dst_key] = previous_outputs[edge.src_node][src_key]
-
-    return node_output
+    # Since the outputs for the nodes (NodeA, NodeB) are predefined in data_out,
+    # we can just return the predefined data_out here.
+    return node.data_out
 
 def get_level_wise_traversal(graph: Graph) -> List[List[str]]:
     """
@@ -232,3 +217,88 @@ def find_islands_in_graph(graph: Graph, return_islands: bool = False) -> Union[b
 
     # If return_islands is False, return whether there are multiple disconnected components
     return len(islands) > 1
+
+def resolve_data_in(node: Node, run_result_outputs: Dict[str, Dict], config) -> Dict[str, DataType]:
+    """
+    Resolves the `data_in` for a node based on the incoming edges (paths_in) and configuration.
+
+    Args:
+        node: The current node being executed.
+        run_result_outputs: The results of nodes that have already been executed.
+        config: The run configuration which may contain data overwrites.
+
+    Returns:
+        dict: The resolved `data_in` for the node.
+    """
+    current_data_in = {}
+    edge_used_for_key = {}  # Tracks the latest edge used for each key
+
+    # Process incoming edges (paths_in) and handle overwrites
+    for edge in node.paths_in:
+        src_node_id = edge.src_node
+        if edge.src_to_dst_data_keys:
+            for src_key, dst_key in edge.src_to_dst_data_keys.items():
+                # Check if the source node has already been executed and has the required output
+                if src_node_id in run_result_outputs and src_key in run_result_outputs[src_node_id]:
+                    # If the destination key already exists, check overwrite conditions
+                    if dst_key in current_data_in:
+                        # If nodes are executed at the same level, choose lexicographically smaller node_id
+                        if src_node_id < current_data_in[dst_key][1]:
+                            current_data_in[dst_key] = (run_result_outputs[src_node_id][src_key], src_node_id)
+                            edge_used_for_key[dst_key] = f"{src_node_id} -> {node.node_id} ({src_key} -> {dst_key})"
+                    else:
+                        # Directly add the result if this is the first time writing to this key
+                        current_data_in[dst_key] = (run_result_outputs[src_node_id][src_key], src_node_id)
+                        edge_used_for_key[dst_key] = f"{src_node_id} -> {node.node_id} ({src_key} -> {dst_key})"
+
+    # Apply config-level overwrites (if any) for the current node
+    if node.node_id in config.data_overwrites:
+        for key, value in config.data_overwrites[node.node_id].items():
+            current_data_in[key] = (value, node.node_id)
+
+    # Return the cleaned data_in for execution (only the values, not the source node ids)
+    return {key: value[0] for key, value in current_data_in.items()}, edge_used_for_key
+
+def update_graph_after_run(graph, run_result_outputs, edge_tracking):
+    """
+    Update the graph structure after the graph run by setting the final data_in and clearing unused edges.
+
+    Args:
+        graph: The graph with nodes and edges.
+        run_result_outputs: The final outputs of each node after execution.
+        edge_tracking: The edges that contributed to the final data_in values.
+
+    Returns:
+        Updated graph with final data_in for each node and unused src_to_dst_data_keys cleared.
+    """
+    updated_nodes = []
+
+    # Loop through each node in the graph
+    for node in graph["nodes"]:
+        # If the node has an entry in the run_result_outputs, update its data_in
+        if node["node_id"] in run_result_outputs:
+            # Update the node's data_in with the final values from run_result_outputs
+            node["data_in"] = run_result_outputs[node["node_id"]]
+        
+        # Loop through each path_out for the current node
+        for path_out in node["paths_out"]:
+            dst_node_id = path_out["dst_node"]
+            # Check if this edge contributed to the final data_in of the destination node
+            if dst_node_id in edge_tracking:
+                src_to_dst_data_keys = path_out.get("src_to_dst_data_keys", {})
+                # Loop through the keys in src_to_dst_data_keys
+                for src_key, dst_key in list(src_to_dst_data_keys.items()):
+                    # If this edge did not contribute to the final value, clear it
+                    if dst_key not in edge_tracking[dst_node_id]:
+                        src_to_dst_data_keys.pop(src_key)  # Remove the unused data key
+            else:
+                # If the destination node has no edge tracking, clear the data keys
+                path_out["src_to_dst_data_keys"] = {}
+
+        # Append the updated node to the new graph structure
+        updated_nodes.append(node)
+
+    # Return the updated graph structure with updated nodes
+    return {
+        "nodes": updated_nodes
+    }

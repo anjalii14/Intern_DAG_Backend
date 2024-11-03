@@ -3,8 +3,8 @@
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any, List, Optional, Set
 from src.controllers.graph_controller import (
-    run_graph, get_run_outputs, get_leaf_outputs,
-    level_wise_traversal, topological_sort, get_islands_for_graph, get_configured_graph, get_graph_runs
+    run_graph, get_run_outputs, get_node_output_for_run,
+    level_wise_traversal, topological_sort, get_islands_for_graph, get_graph_runs, get_leaf_outputs_for_run
 )
 from src.models.graph_run_config import GraphRunConfig
 
@@ -64,13 +64,12 @@ async def get_run_outputs_route(graph_id: str, run_id: str):
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.get("/graph/{graph_id}/run/{run_id}/leaf-outputs", response_model=Dict[str, Any])
-async def get_leaf_outputs_route(graph_id: str, run_id: str):
+@router.get("/graph/run/{run_id}/leaf-outputs", response_model=Dict[str, Any])
+async def get_leaf_outputs_route(run_id: str):
     """
     Get the outputs of leaf nodes for a specific run.
     
     Args:
-        graph_id (str): The ID of the graph.
         run_id (str): The run ID.
     
     Returns:
@@ -80,7 +79,7 @@ async def get_leaf_outputs_route(graph_id: str, run_id: str):
         HTTPException: If the run is not found.
     """
     try:
-        leaf_outputs = await get_leaf_outputs(graph_id, run_id)
+        leaf_outputs = await get_leaf_outputs_for_run(run_id)
         return leaf_outputs
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -130,27 +129,22 @@ async def topological_sort_route(graph_id: str, config: GraphRunConfig):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
-@router.get("/graph/{graph_id}/run/{run_id}/leaf-nodes", response_model=List[str])
-async def get_leaf_nodes_route(graph_id: str, run_id: str):
+@router.get("/node-output", response_model=list)
+async def get_node_output(run_id: str, node_id: str):
     """
-    Get the list of all leaf nodes for a given graph run.
+    Get the data output for a given graph run and node id.
 
     Args:
-        graph_id (str): The ID of the graph.
+        node_id (str): The ID of the node.
         run_id (str): The run ID.
 
     Returns:
-        list: List of leaf nodes for the graph run.
+        list: Data In and data out respectively.
 
     Raises:
-        HTTPException: If the graph run is not found.
+        HTTPException: If the graph run or node id is not found.
     """
-    try:
-        leaf_nodes = await get_leaf_outputs(graph_id, run_id)
-        return leaf_nodes
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    return await get_node_output_for_run(run_id, node_id)
 
 @router.post("/api/graph/{graph_id}/islands")
 async def get_islands_route(graph_id: str, config: GraphRunConfig) -> List[Set[str]]:
@@ -172,50 +166,3 @@ async def get_islands_route(graph_id: str, config: GraphRunConfig) -> List[Set[s
         return islands
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-@router.get("/graph/{graph_id}/run/{run_id}/configured", response_model=Dict[str, str])
-async def get_configured_graph_route(graph_id: str, run_id: str):
-    """
-    Retrieve only the configured graph data, graph ID, and run ID.
-
-    Args:
-        graph_id (str): The ID of the graph.
-        run_id (str): The unique run ID.
-
-    Returns:
-        dict: Subset of the run result containing `graph_id`, `run_id`, and `configured_graph` for visualization.
-
-    Raises:
-        HTTPException: If the graph run is not found.
-    """
-    try:
-        run_id, graph_id, configured_graph = await get_configured_graph(graph_id, run_id)
-        return {
-            "run_id": run_id,
-            "graph_id": graph_id,
-            "configured_graph": configured_graph
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    
-@router.get("/graph/{graph_id}/runs", response_model=List[Dict[str, str]])
-async def get_graph_runs_route(graph_id: str):
-    """
-    API endpoint to retrieve all previous runs for a specific graph ID.
-
-    Args:
-        graph_id (str): The ID of the graph to fetch runs for.
-
-    Returns:
-        List[Dict[str, str]]: A list of run IDs and creation timestamps.
-
-    Raises:
-        HTTPException: If fetching runs fails.
-    """
-    try:
-        runs = await get_graph_runs(graph_id)
-        return runs
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))

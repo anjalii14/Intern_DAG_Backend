@@ -6,9 +6,9 @@ from src.models.graph_model import Graph
 from src.models.graph_run_config import GraphRunConfig
 from src.utils.graph_validations import validate_graph_structure
 from src.utils.graph_run_validations import validate_graph_config
-from src.utils.helpers import generate_run_id, get_node_by_id, get_topological_order, is_leaf_node, apply_run_config, compute_node_output, get_level_wise_traversal, find_islands_in_graph
+from src.utils.helpers import generate_run_id, get_node_by_id, get_topological_order, is_leaf_node, apply_run_config, compute_node_output, get_level_wise_traversal, find_islands_in_graph, resolve_data_in, update_graph_after_run
 from src.database import db
-
+from fastapi import HTTPException
 
 async def create_graph(graph: Graph):
     """
@@ -115,14 +115,16 @@ async def delete_graph(graph_id: str):
 
 async def run_graph(graph_id: str, config: GraphRunConfig):
     """
-    Run the graph using the provided GraphRunConfig.
+    Run the graph using the provided GraphRunConfig, save the results and leaf outputs in the database,
+    and check if a similar run exists before executing the graph.
 
     Args:
         graph_id (str): The ID of the graph to run.
         config (GraphRunConfig): The configuration for running the graph.
 
     Returns:
-        dict: The run result outputs, the generated run ID, and the configured graph.
+        dict: The run result outputs, the list of executed node IDs, updated data_in for each node, 
+        leaf node outputs, and the latest edge used for each data_in key, stored as per the node model structure.
 
     Raises:
         HTTPException: If the graph is not found, configuration is invalid, or if there are other errors.
@@ -131,141 +133,201 @@ async def run_graph(graph_id: str, config: GraphRunConfig):
         # Check if a similar run configuration already exists
         existing_run = await db["graph_runs"].find_one({"graph_id": graph_id, "config": config.dict()})
         if existing_run:
+            # If run already exists, print the run details and return the outputs
+            print(f"Run with the same configuration already exists: {existing_run['run_id']}")
             return {
-                "message": "Run with the same configuration already exists",
                 "run_id": existing_run["run_id"],
-                "outputs": existing_run["outputs"],
-                "configured_graph": existing_run.get("configured_graph")  # Include configured_graph if available
+                "executed_nodes": existing_run["executed_nodes"],
+                "updated_data_in": existing_run["updated_data_in"],
+                "edges_used": existing_run["edges_used"],
+                "run_result_outputs": existing_run["outputs"],
+                "leaf_outputs": existing_run.get("leaf_outputs", {})
             }
 
         # Retrieve the graph and validate the configuration
         graph = await get_graph(graph_id)
         validate_graph_config(graph, config)
-        
-        # Apply the run configuration and validate
+
+        # Apply the run configuration to the graph
         configured_graph = apply_run_config(graph, config)
+
         # Generate topological order for nodes
-        print(configured_graph.nodes)
         sorted_node_ids = get_topological_order(configured_graph)
+        print(sorted_node_ids)
+
         node_lookup = {node.node_id: node for node in configured_graph.nodes}
 
         # Generate unique run ID
         run_id = generate_run_id()
         run_result_outputs = {}
+        updated_data_in = {}  # To track updated data_in for each node
+        edge_tracking = {}  # To track which edge contributed to each data_in key
+        leaf_outputs = {}  # To track outputs for leaf nodes
 
         # Execute nodes in topological order
+        executed_node_ids = []  # List to track executed nodes
         for node_id in sorted_node_ids:
             node = node_lookup[node_id]
-            node_output = compute_node_output(node, run_result_outputs)
+
+            # Skip nodes that are disabled
+            if hasattr(node, 'enabled') and not node.enabled:
+                continue
+
+            # Debug: Print the current node being executed
+            print(f"Executing node: {node_id}")
+
+            # Resolve data_in for the current node and track the edges used
+            current_data_in, edges_for_node = resolve_data_in(node, run_result_outputs, config)
+            print(current_data_in)
+
+            # Update the node's data_in with the resolved values
+            node.data_in = current_data_in
+
+            # Store the updated data_in and edges for this node
+            updated_data_in[node_id] = current_data_in
+            edge_tracking[node_id] = edges_for_node
+
+            # Compute node output with resolved data_in
+            node_output = compute_node_output(node, current_data_in)
             run_result_outputs[node_id] = node_output
 
-        # Prepare final run result for MongoDB
+            # Update the node's data_out with the computed output
+            node.data_out = node_output
+
+            # Check if the node is a leaf node (no paths_out)
+            if not node.paths_out:
+                leaf_outputs[node_id] = node_output
+
+            # Add the executed node ID to the list
+            executed_node_ids.append(node_id)
+
+            # Debug: Print the output after executing each node
+            print(f"Node {node_id} executed. Outputs: {run_result_outputs[node_id]}")
+
+        # Save the run result into the database, including leaf outputs
         run_result = {
             "run_id": run_id,
             "graph_id": graph_id,
             "config": config.dict(),
+            "executed_nodes": executed_node_ids,
+            "updated_data_in": updated_data_in,
+            "edges_used": edge_tracking,
             "outputs": run_result_outputs,
-            "configured_graph": configured_graph.dict()
+            "leaf_outputs": leaf_outputs  # Add leaf outputs to the saved result
         }
-
-        # Insert result into MongoDB
         await db["graph_runs"].insert_one(run_result)
 
-        # Return the run ID, outputs, and configured graph for visualization
+        # Return the run ID, executed node IDs, updated data_in for each node, edge tracking, run outputs, and leaf outputs
         return {
             "run_id": run_id,
-            "outputs": run_result_outputs,
-            "configured_graph": configured_graph.dict()
+            "executed_nodes": executed_node_ids,
+            "updated_data_in": updated_data_in,
+            "edges_used": edge_tracking,
+            "run_result_outputs": run_result_outputs,
+            "leaf_outputs": leaf_outputs
         }
 
-    except ValueError as ve:
-        # Raise HTTP 400 error with a detailed message for validation issues
-        raise HTTPException(status_code=400, detail=f"Validation Error: {str(ve)}")
-
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        # Handle unexpected errors with a 500 error code and return the error message
-        raise HTTPException(status_code=500, detail=f"{str(e)}")
-
-
-async def get_configured_graph(graph_id: str, run_id: str):
-    """
-    Retrieve a configured graph by graph ID and run ID.
-
-    Args:
-        graph_id (str): The ID of the graph.
-        run_id (str): The unique run ID of the graph execution.
-
-    Returns:
-        The configured graph object with run_id and graph_id.
-
-    Raises:
-        ValueError: If the configured graph is not found or if the run_id is invalid.
-    """
-    try:
-        # Convert run_id to ObjectId and handle invalid format
-        run_object_id = ObjectId(run_id)
-    except:
-        raise ValueError(f"Invalid run_id format: {run_id}")
-
-    # Fetch the graph run record from MongoDB using the graph_id and run_id
-    graph_run = await db["graph_runs"].find_one({"_id": run_object_id, "graph_id": graph_id})
-    
-    # If no such record exists, raise an exception
-    if graph_run is None:
-        raise ValueError("Configured graph run not found")
-
-    # Prepare the response directly as a dictionary
-    response = {
-        "run_id": str(graph_run["_id"]),
-        "graph_id": graph_run["graph_id"],
-        "configured_graph": graph_run["configured_graph"]
-    }
-    
-    return response
-
+        raise HTTPException(status_code=500, detail="An error occurred while running the graph: " + str(e))
+      
 async def get_run_outputs(graph_id: str, run_id: str):
     """
-    Get the outputs of a specific graph run.
+    Get the outputs, data_in, data_out, and edges used of a specific graph run.
 
     Args:
         graph_id (str): The ID of the graph.
         run_id (str): The run ID.
 
     Returns:
-        dict: Outputs of the graph run.
+        dict: Outputs of the graph run, including data_in, data_out, and edges used.
 
     Raises:
         ValueError: If the run is not found.
     """
+    # Fetch the run from the database
     run = await db["graph_runs"].find_one({"graph_id": graph_id, "run_id": run_id})
+    
+    # Check if the run exists
     if not run:
         raise ValueError("Run not found")
-    return run["outputs"]
-
-
-async def get_leaf_outputs(graph_id: str, run_id: str):
+    
+    # Return the data_in, data_out, edges_used, and outputs from the run
+    return {
+        "outputs": run.get("outputs", {}),
+        "data_in": run.get("updated_data_in", {}),
+        "data_out": {node_id: node_output for node_id, node_output in run.get("outputs", {}).items()},
+        "edges_used": run.get("edges_used", {})
+    }
+async def get_node_output_for_run(run_id: str, node_id: str):
     """
-    Get the outputs of the leaf nodes for a specific run.
+    Get the data_in and data_out for a specific node in the graph run.
 
     Args:
-        graph_id (str): The ID of the graph.
+        run_id (str): The run ID.
+        node_id (str): The node ID.
+
+    Returns:
+        list: A list containing the data_in and data_out for the specified node.
+    """
+    # Fetch the run result from the database
+    run = await db["graph_runs"].find_one(
+        {"run_id": run_id},
+        {"updated_data_in": 1, "outputs": 1}  # Fetch only the fields needed for node outputs
+    )
+
+    # Check if the run exists
+    if not run:
+        raise ValueError(f"Run with ID {run_id} not found.")
+
+    # Fetch data_in and data_out for the specific node
+    data_in = run.get("updated_data_in", {}).get(node_id)
+    data_out = run.get("outputs", {}).get(node_id)
+
+    # Raise an error if the node is not found in the run
+    if data_in is None or data_out is None:
+        raise ValueError(f"Node {node_id} not found in the run.")
+
+    # Wrap the result in a list
+    return [{
+        "node_id": node_id,
+        "data_in": data_in,
+        "data_out": data_out
+    }]
+
+async def get_leaf_outputs_for_run(run_id: str):
+    """
+    Retrieve the outputs for all leaf nodes in the graph run from the database.
+
+    Args:
         run_id (str): The run ID.
 
     Returns:
-        dict: Outputs of the leaf nodes.
+        dict: Outputs of all leaf nodes.
 
     Raises:
-        ValueError: If the run is not found.
+        ValueError: If the run is not found or there are no leaf outputs.
     """
-    run = await db["graph_runs"].find_one({"graph_id": graph_id, "run_id": run_id})
+    # Fetch the run data from the database
+    run = await db["graph_runs"].find_one(
+        {"run_id": run_id},
+        {"leaf_outputs": 1}  # Fetch only the leaf_outputs field
+    )
+    
+    # Check if the run exists
     if not run:
-        raise ValueError("Run not found")
-
-    graph = await get_graph(graph_id)
-    leaf_node_ids = [node.node_id for node in graph.nodes if is_leaf_node(node)]
-    leaf_outputs = {node_id: run["outputs"].get(node_id) for node_id in leaf_node_ids}
-    print(leaf_outputs)
+        raise ValueError(f"Run with ID {run_id} not found.")
+    
+    # Get the leaf outputs
+    leaf_outputs = run.get("leaf_outputs", {})
+    
+    # Check if there are leaf outputs available
+    if not leaf_outputs:
+        raise ValueError(f"No leaf outputs found for run {run_id}.")
+    
     return leaf_outputs
+
 
 async def level_wise_traversal(graph_id: str, config: GraphRunConfig) -> List[List[str]]:
     """
@@ -338,8 +400,6 @@ async def get_islands_for_graph(graph_id: str, config: GraphRunConfig) -> List[S
     islands = find_islands_in_graph(configured_graph, return_islands=True)
 
     return islands
-
-from fastapi import HTTPException
 
 async def get_graph_runs(graph_id: str) -> List[Dict]:
     """

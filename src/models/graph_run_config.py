@@ -1,5 +1,5 @@
 from typing import List, Dict, Union
-from pydantic import BaseModel, model_validator, Field
+from pydantic import BaseModel, Field
 
 DataType = Union[int, float, str, bool, list, dict]  
 
