@@ -86,7 +86,7 @@ def apply_run_config(graph: Graph, config) -> Graph:
         config (GraphRunConfig): The configuration for the run.
 
     Returns:
-        Graph: The updated graph after applying enable/disable and data overwrites.
+        Graph: The updated graph after applying enable/disable.
     """
     updated_graph = graph.copy(deep=True)
     

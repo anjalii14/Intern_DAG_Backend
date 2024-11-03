@@ -260,6 +260,7 @@ async def get_run_outputs(graph_id: str, run_id: str):
         "data_out": {node_id: node_output for node_id, node_output in run.get("outputs", {}).items()},
         "edges_used": run.get("edges_used", {})
     }
+
 async def get_node_output_for_run(run_id: str, node_id: str):
     """
     Get the data_in and data_out for a specific node in the graph run.
