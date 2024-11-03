@@ -6,7 +6,7 @@ from src.models.graph_model import Graph
 from src.models.graph_run_config import GraphRunConfig
 from src.utils.graph_validations import validate_graph_structure
 from src.utils.graph_run_validations import validate_graph_config
-from src.utils.helpers import generate_run_id, get_node_by_id, get_topological_order, is_leaf_node, apply_run_config, compute_node_output, get_level_wise_traversal, find_islands_in_graph, resolve_data_in, update_graph_after_run
+from src.utils.helpers import generate_run_id, get_node_by_id, get_topological_order, is_leaf_node, apply_run_config, compute_node_output, get_level_wise_traversal, find_islands_in_graph, resolve_data_in
 from src.database import db
 from fastapi import HTTPException
 
