@@ -46,11 +46,11 @@ source env/bin/activate  # For Linux/macOS
 
 pip install -r requirements.txt
 ```
-####### Environment Variables
+###### Environment Variables
 Create a .env file in the root directory to configure environment variables. Store your mongodb uri from mongodb atlas or mongodb app.
 Note: It should as same level as src.
 
-####### Running the Application
+###### Running the Application
 Once the dependencies are installed and the environment variables are set up, you can run the FastAPI server.
 ```bash
 uvicorn src.main:app --reload
