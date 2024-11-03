@@ -71,10 +71,7 @@ docker run -p 8000:8000 -e MONGO_URI="" "your docker project name in lowercase"
 The server will be accessible at http://localhost:8000.
 
 ### Swagger API Documentation
-FastAPI provides built-in interactive API documentation using Swagger. You can access it by navigating to the /docs endpoint in your browser:
-```
-http://localhost:8000/docs
-```
+FastAPI provides built-in interactive API documentation using Swagger. You can access it by navigating to the /docs endpoint in your browser: http://localhost:8000/docs
 This interactive documentation allows you to explore the available API routes, send test requests, and view the expected request and response formats.
 
 
